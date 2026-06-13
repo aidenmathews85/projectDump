@@ -69,6 +69,9 @@ namespace BetterBossRush
         // prevents console text flooding
         private static int logTimer = 0;
 
+        //self explanatory
+        public static List<int> DyingBosses = new List<int>();
+
         private static void SetupExemptionList()
         {
             // clear prior records from the collection
@@ -132,6 +135,7 @@ namespace BetterBossRush
             TierStartIndices.Clear();
             TierEndIndices.Clear();
 
+            DyingBosses.Clear();
             SetupExemptionList();
 
             // again, just in case
@@ -199,6 +203,17 @@ namespace BetterBossRush
                 {
                     unifiedWhitelist.AddRange(originalPermittedNPCs[activeBossIndex]);
                 }
+            }
+
+            //add bosses that are currently in their death animation to the whitelist so they are protected
+            for (int i = 0; i < DyingBosses.Count; i++)
+            {
+                int dyingBossIndex = DyingBosses[i];
+                if (originalPermittedNPCs.ContainsKey(dyingBossIndex))
+                {
+                        unifiedWhitelist.AddRange(originalPermittedNPCs[dyingBossIndex]);
+                }
+            
             }
 
             // many mods have this weird thing where certain bosses (notably ones from vanilla) will delete other currently active bosses. this prevents that
@@ -335,6 +350,12 @@ namespace BetterBossRush
                                 Slots[i].Reset();
                             }
                         }
+                        else if (IsBossInDeathAnimation(Slots[i].BossIndex) && CurrentBlitzTier <= 2)
+                        {
+                            // move boss to the dying registry so it is still protected but frees the slot
+                            DyingBosses.Add(Slots[i].BossIndex);
+                            Slots[i].Reset();
+                        }
                         else
                         {
                             Slots[i].SpawnDelayTimer--;
@@ -344,6 +365,20 @@ namespace BetterBossRush
                                 Slots[i].IsSpawned = true;
                             }
                         }
+                    }
+                }
+
+                for (int i = DyingBosses.Count - 1; i >= 0; i--)
+                {
+                    int dyingIndex = DyingBosses[i];
+                    if (!IsBossAlive(dyingIndex))
+                    {
+                        // if the dying boss was the end of the tier, advance the tier now that it is fully gone
+                        if (dyingIndex == endCapIndex)
+                        {
+                            CurrentBlitzTier++;
+                        }
+                        DyingBosses.RemoveAt(i);
                     }
                 }
 
@@ -608,6 +643,70 @@ namespace BetterBossRush
 
             Mod.Logger.Info("=================================================================================");
         }
+        // checks if a boss is currently playing a death animation by scanning all of its active segments/parts
+        private bool IsBossInDeathAnimation(int bossIndex)
+        {
+            if (bossIndex < 0 || bossIndex >= BossRushEvent.Bosses.Count) 
+            {
+                return false;
+            }
+
+            int mainID = BossRushEvent.Bosses[bossIndex].EntityID;
+            List<int> associatedIDs = new List<int>();
+            associatedIDs.Add(mainID);
+
+            // pull all segments, parts, or subentities related to this boss fight
+            if (originalPermittedNPCs.ContainsKey(bossIndex))
+            {
+                foreach (int subID in originalPermittedNPCs[bossIndex])
+                {
+                    if (!associatedIDs.Contains(subID))
+                    {
+                        associatedIDs.Add(subID);
+                    }
+                }
+            }
+
+            bool anyPartsActive = false;
+
+            // scan every active npc in the world, shouldnt cause perfomance issues
+            for (int i = 0; i < Main.maxNPCs; i++)
+            {
+                NPC npc = Main.npc[i];
+                if (npc.active)
+                {
+                    // if the active npc belongs to this boss (head, body segment, tail, or twin)
+                    if (associatedIDs.Contains(npc.type))
+                    {
+                        anyPartsActive = true;
+                        bool partIsDying = false;
+
+                        // check the exact invincibility and life threshold rules 
+                        if (npc.dontTakeDamage)
+                        {
+                            if (npc.life <= 1)
+                            {
+                                partIsDying = true;
+                            }
+                        }
+
+                        if (npc.life <= 0)
+                        {
+                            partIsDying = true;
+                        }
+
+                        // if even one single active segment or part is still fully fighting, the boss as a whole is not ready to free up its slot yet
+                        if (!partIsDying)
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            // returns true only if we found active pieces and every single one of them was in a death animation state
+            return anyPartsActive;
+        }
     }
 
     // some bosses have different ai that requires some level of acknowledgement in this mod to make the boss rush flow. this class handles that
@@ -631,6 +730,30 @@ namespace BetterBossRush
                         {
                             activeSlotIndex = bIdx;
                             break;
+                        }
+                    }
+                }
+
+                // check if the boss is in the dying registry to keep it protected
+                if (activeSlotIndex == -1)
+                {
+                    for (int i = 0; i < BetterBossRushSystem.DyingBosses.Count; i++)
+                    {
+                        int bIdx = BetterBossRushSystem.DyingBosses[i];
+                        var bossDef = BossRushEvent.Bosses[bIdx];
+                        
+                        if (bossDef.EntityID == npc.type)
+                        {
+                            activeSlotIndex = bIdx;
+                            break;
+                        }
+                        if (bossDef.HostileNPCsToNotDelete != null)
+                        {
+                            if (bossDef.HostileNPCsToNotDelete.Contains(npc.type))
+                            {
+                                activeSlotIndex = bIdx;
+                                break;
+                            }
                         }
                     }
                 }
